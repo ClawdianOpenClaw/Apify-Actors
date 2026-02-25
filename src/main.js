@@ -1,4 +1,4 @@
-import Apify from 'apify';
+import { Actor } from 'apify';
 import puppeteer from 'puppeteer';
 
 // CSS Selectors for each news source
@@ -8,7 +8,7 @@ const SELECTORS = {
         mostRead: '.most-read__list-items li',
         title: 'h3',
         link: 'a',
-        position: true // Rank by position in list
+        position: true
     },
     reuters: {
         url: 'https://www.reuters.com',
@@ -43,7 +43,7 @@ const SELECTORS = {
 // Reddit configuration
 const REDDIT_SUBS = ['news', 'worldnews', 'trueReddit'];
 
-export async function scrapeNewsSource(source, browser) {
+async function scrapeNewsSource(source, browser) {
     const config = SELECTORS[source];
     if (!config) return [];
 
@@ -86,7 +86,7 @@ export async function scrapeNewsSource(source, browser) {
     return results;
 }
 
-export async function scrapeReddit(sub, browser, sort = 'hot', time = 'day') {
+async function scrapeReddit(sub, browser, sort = 'hot', time = 'day') {
     const page = await browser.newPage();
     const results = [];
 
@@ -94,7 +94,6 @@ export async function scrapeReddit(sub, browser, sort = 'hot', time = 'day') {
         const url = `https://www.reddit.com/r/${sub}/${sort}/`;
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
         
-        // Wait for posts to load
         await page.waitForSelector('shreddit-post', { timeout: 10000 }).catch(() => {});
         
         const posts = await page.$$('shreddit-post');
@@ -130,19 +129,16 @@ export async function scrapeReddit(sub, browser, sort = 'hot', time = 'day') {
     return results;
 }
 
-// Virality scoring
-export function calculateViralityScore(story) {
+function calculateViralityScore(story) {
     let score = 0;
 
     if (story.type === 'news') {
-        // News site scoring
         const position = story.position || 10;
         
         if (position <= 3) score = 40;
         else if (position <= 5) score = 30;
         else if (position <= 10) score = 20;
         
-        // Source multipliers
         const sourceScores = {
             'BBC': 1.2,
             'REUTERS': 1.3,
@@ -153,7 +149,6 @@ export function calculateViralityScore(story) {
         score = score * (sourceScores[story.source] || 1.0);
         
     } else if (story.type === 'reddit') {
-        // Reddit scoring
         const upvotes = story.score || 0;
         
         if (upvotes >= 5000) score = 40;
@@ -161,7 +156,6 @@ export function calculateViralityScore(story) {
         else if (upvotes >= 500) score = 20;
         else if (upvotes >= 100) score = 10;
         
-        // Sort bonus
         if (story.sort === 'hot') score *= 1.2;
         if (story.sort === 'rising') score *= 1.1;
     }
@@ -169,64 +163,56 @@ export function calculateViralityScore(story) {
     return Math.min(Math.round(score), 100);
 }
 
-// Main actor function
-Apify.main(async () => {
-    const input = await Apify.getInput();
-    const { 
-        newsSources = ['bbc', 'reuters', 'apnews'], 
-        redditSubs = ['news', 'worldnews'],
-        redditSorts = ['hot', 'rising'],
-        maxResults = 20
-    } = input || {};
+// Main function
+await Actor.init();
 
-    console.log('Starting Daily Scope scraper...');
-    console.log('News sources:', newsSources);
-    console.log('Reddit subs:', redditSubs);
+const input = await Actor.getInput();
+const { 
+    newsSources = ['bbc', 'reuters', 'apnews'], 
+    redditSubs = ['news', 'worldnews'],
+    redditSorts = ['hot', 'rising'],
+    maxResults = 20
+} = input || {};
 
-    // Launch browser
-    const browser = await puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+console.log('Starting Daily Scope scraper...');
+console.log('News sources:', newsSources);
+console.log('Reddit subs:', redditSubs);
 
-    let allStories = [];
+const browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+});
 
-    // Scrape news sites
-    for (const source of newsSources) {
-        console.log(`Scraping ${source}...`);
-        const stories = await scrapeNewsSource(source, browser);
+let allStories = [];
+
+for (const source of newsSources) {
+    console.log(`Scraping ${source}...`);
+    const stories = await scrapeNewsSource(source, browser);
+    allStories.push(...stories);
+}
+
+for (const sub of redditSubs) {
+    for (const sort of redditSorts) {
+        console.log(`Scraping r/${sub} (${sort})...`);
+        const stories = await scrapeReddit(sub, browser, sort, 'day');
         allStories.push(...stories);
     }
+}
 
-    // Scrape Reddit
-    for (const sub of redditSubs) {
-        for (const sort of redditSorts) {
-            console.log(`Scraping r/${sub} (${sort})...`);
-            const stories = await scrapeReddit(sub, browser, sort, 'day');
-            allStories.push(...stories);
-        }
-    }
+await browser.close();
 
-    await browser.close();
+const scoredStories = allStories.map(story => ({
+    ...story,
+    viralityScore: calculateViralityScore(story)
+}));
 
-    // Calculate virality scores
-    const scoredStories = allStories.map(story => ({
-        ...story,
-        viralityScore: calculateViralityScore(story)
-    }));
+scoredStories.sort((a, b) => b.viralityScore - a.viralityScore);
 
-    // Sort by score
-    scoredStories.sort((a, b) => b.viralityScore - a.viralityScore);
+const topStories = scoredStories.slice(0, maxResults);
 
-    // Limit results
-    const topStories = scoredStories.slice(0, maxResults);
+await Actor.pushData(topStories);
 
-    // Save results
-    await Apify.setValue('OUTPUT', topStories);
-    
-    // Also save to default dataset for easy access
-    await Apify.pushData(topStories);
+console.log(`Done! Found ${topStories.length} stories.`);
+console.log('Top story:', topStories[0]?.title);
 
-    console.log(`Done! Found ${topStories.length} stories.`);
-    console.log('Top story:', topStories[0]?.title);
-});
+await Actor.exit();
