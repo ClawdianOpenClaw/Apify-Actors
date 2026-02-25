@@ -1,0 +1,7 @@
+{
+  "name": "daily-scope-news-scraper",
+  "version": "1.0.0",
+  "type": "module",
+  "runtime": "node:20",
+  "buildTag": "latest"
+}
