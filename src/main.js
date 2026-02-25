@@ -1,5 +1,4 @@
 import { Actor } from 'apify';
-import puppeteer from 'puppeteer';
 
 // CSS Selectors for each news source
 const SELECTORS = {
@@ -7,51 +6,44 @@ const SELECTORS = {
         url: 'https://www.bbc.com/news',
         mostRead: '.most-read__list-items li',
         title: 'h3',
-        link: 'a',
-        position: true
+        link: 'a'
     },
     reuters: {
         url: 'https://www.reuters.com',
         mostRead: '.story-box-collection li, .story-list li',
         title: 'h3, a',
-        link: 'a',
-        position: true
+        link: 'a'
     },
     apnews: {
         url: 'https://apnews.com/hub/ap-top-25',
         mostRead: '.PageList-Items li, .headline',
         title: 'h3, a',
-        link: 'a',
-        position: true
+        link: 'a'
     },
     vox: {
         url: 'https://www.vox.com',
         mostRead: '.crop-21-9 li, .most-ember-widget li',
         title: 'h3, a',
-        link: 'a',
-        position: true
+        link: 'a'
     },
     buzzfeed: {
         url: 'https://www.buzzfeednews.com',
         mostRead: '.news-article, .story-card',
         title: 'h2, h3',
-        link: 'a',
-        position: true
+        link: 'a'
     }
 };
 
-// Reddit configuration
-const REDDIT_SUBS = ['news', 'worldnews', 'trueReddit'];
-
-async function scrapeNewsSource(source, browser) {
+async function scrapeNewsSource(source) {
     const config = SELECTORS[source];
     if (!config) return [];
 
-    const page = await browser.newPage();
     const results = [];
 
     try {
-        await page.goto(config.url, { waitUntil: 'networkidle2', timeout: 30000 });
+        const page = await Actor.newPage();
+        
+        await page.goto(config.url, { waitUntil: 'networkidle2', timeout: 60000 });
         
         const stories = await page.$$(config.mostRead);
         
@@ -64,9 +56,9 @@ async function scrapeNewsSource(source, browser) {
                 const title = titleEl ? await titleEl.evaluate(e => e.textContent) : '';
                 const url = linkEl ? await linkEl.evaluate(e => e.href) : '';
                 
-                if (title && url) {
+                if (title && url && title.length > 5) {
                     results.push({
-                        title: title.trim(),
+                        title: title.trim().substring(0, 200),
                         url: url.trim(),
                         source: source.toUpperCase(),
                         position: i + 1,
@@ -77,24 +69,27 @@ async function scrapeNewsSource(source, browser) {
                 // Skip failed elements
             }
         }
+        
+        await page.close();
+        
     } catch (e) {
         console.log(`Error scraping ${source}:`, e.message);
-    } finally {
-        await page.close();
     }
 
     return results;
 }
 
-async function scrapeReddit(sub, browser, sort = 'hot', time = 'day') {
-    const page = await browser.newPage();
+async function scrapeReddit(sub, sort = 'hot') {
     const results = [];
 
     try {
-        const url = `https://www.reddit.com/r/${sub}/${sort}/`;
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        const page = await Actor.newPage();
         
-        await page.waitForSelector('shreddit-post', { timeout: 10000 }).catch(() => {});
+        const url = `https://www.reddit.com/r/${sub}/${sort}/`;
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+        
+        // Wait for content
+        await page.waitForTimeout(3000);
         
         const posts = await page.$$('shreddit-post');
         
@@ -105,14 +100,13 @@ async function scrapeReddit(sub, browser, sort = 'hot', time = 'day') {
                 const permalink = await post.evaluate(e => e.getAttribute('permalink') || '');
                 const score = await post.evaluate(e => e.getAttribute('score') || '0');
                 
-                if (title) {
+                if (title && title.length > 5) {
                     results.push({
-                        title: title.trim(),
+                        title: title.trim().substring(0, 200),
                         url: 'https://reddit.com' + permalink,
                         source: `r/${sub}`,
                         score: parseInt(score) || 0,
                         sort: sort,
-                        time: time,
                         type: 'reddit'
                     });
                 }
@@ -120,10 +114,11 @@ async function scrapeReddit(sub, browser, sort = 'hot', time = 'day') {
                 // Skip
             }
         }
+        
+        await page.close();
+        
     } catch (e) {
         console.log(`Error scraping r/${sub}:`, e.message);
-    } finally {
-        await page.close();
     }
 
     return results;
@@ -178,41 +173,51 @@ console.log('Starting Daily Scope scraper...');
 console.log('News sources:', newsSources);
 console.log('Reddit subs:', redditSubs);
 
-const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-});
-
 let allStories = [];
 
+// Scrape news sites
 for (const source of newsSources) {
     console.log(`Scraping ${source}...`);
-    const stories = await scrapeNewsSource(source, browser);
-    allStories.push(...stories);
-}
-
-for (const sub of redditSubs) {
-    for (const sort of redditSorts) {
-        console.log(`Scraping r/${sub} (${sort})...`);
-        const stories = await scrapeReddit(sub, browser, sort, 'day');
+    try {
+        const stories = await scrapeNewsSource(source);
         allStories.push(...stories);
+    } catch (e) {
+        console.log(`Failed to scrape ${source}:`, e.message);
     }
 }
 
-await browser.close();
+// Scrape Reddit
+for (const sub of redditSubs) {
+    for (const sort of redditSorts) {
+        console.log(`Scraping r/${sub} (${sort})...`);
+        try {
+            const stories = await scrapeReddit(sub, sort);
+            allStories.push(...stories);
+        } catch (e) {
+            console.log(`Failed to scrape r/${sub}:`, e.message);
+        }
+    }
+}
 
+// Calculate virality scores
 const scoredStories = allStories.map(story => ({
     ...story,
     viralityScore: calculateViralityScore(story)
 }));
 
+// Sort by score
 scoredStories.sort((a, b) => b.viralityScore - a.viralityScore);
 
+// Limit results
 const topStories = scoredStories.slice(0, maxResults);
 
+// Save results
 await Actor.pushData(topStories);
 
 console.log(`Done! Found ${topStories.length} stories.`);
-console.log('Top story:', topStories[0]?.title);
+if (topStories.length > 0) {
+    console.log('Top story:', topStories[0].title);
+    console.log('Top score:', topStories[0].viralityScore);
+}
 
 await Actor.exit();

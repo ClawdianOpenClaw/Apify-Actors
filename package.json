@@ -3,12 +3,5 @@
   "version": "1.0.0",
   "type": "module",
   "description": "Scrape viral news from BBC, Reuters, AP, Vox, BuzzFeed + Reddit with virality scoring",
-  "main": "src/main.js",
-  "scripts": {
-    "start": "node src/main.js"
-  },
-  "dependencies": {
-    "apify": "^3.1.0",
-    "puppeteer": "^21.0.0"
-  }
+  "main": "src/main.js"
 }
