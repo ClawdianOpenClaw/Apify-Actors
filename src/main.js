@@ -1,7 +1,5 @@
-import { Apify } from 'apify';
+import Apify from 'apify';
 import puppeteer from 'puppeteer';
-
-const { utils } = Apify;
 
 // CSS Selectors for each news source
 const SELECTORS = {
